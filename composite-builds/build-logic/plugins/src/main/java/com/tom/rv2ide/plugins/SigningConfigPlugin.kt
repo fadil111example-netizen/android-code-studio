@@ -38,6 +38,12 @@ class SigningConfigPlugin : Plugin<Project> {
         return
       }
 
+      // Password kosong (mis. secret GitHub tidak diset di fork) => pakai debug signing bawaan AGP
+      if (signing.storePassword.isBlank() || signing.keyPassword.isBlank()) {
+        logger.lifecycle("Signing passwords are blank, falling back to default debug signing")
+        return
+      }
+
       val signingKey = file(signing.storeFile)
       if (!signingKey.exists()) {
         return
