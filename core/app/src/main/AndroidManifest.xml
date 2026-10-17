@@ -150,6 +150,10 @@
       </intent-filter>
     </receiver>
 
+    <receiver
+      android:exported="false"
+      android:name=".adbwireless.AdbPairingReceiver" />
+
     <service
       android:exported="false"
       android:name=".services.builder.GradleBuildService" />
