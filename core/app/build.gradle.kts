@@ -73,19 +73,31 @@ android {
   experimentalProperties["android.experimental.enableGlobalSynthetics"] = true
   
 
+  // Fork build: tidak memakai keystore milik developer asli (terkunci).
+  // Semua build type ditandatangani dengan debug keystore standar Android yang
+  // dibuat otomatis oleh AGP, sehingga build di GitHub Actions selalu berhasil.
+  // Jika ingin memakai keystore sendiri, set 4 env var ini (opsional):
+  // SIGNING_STORE_FILE, SIGNING_STORE_PASSWORD, SIGNING_KEY_ALIAS, SIGNING_KEY_PASSWORD
+  val customStoreFile = System.getenv("SIGNING_STORE_FILE")?.takeIf { it.isNotBlank() }?.let { file(it) }
+  val customStorePassword = System.getenv("SIGNING_STORE_PASSWORD").orEmpty()
+  val customKeyAlias = System.getenv("SIGNING_KEY_ALIAS").orEmpty()
+  val customKeyPassword = System.getenv("SIGNING_KEY_PASSWORD").orEmpty()
+  val useCustomSigning =
+      customStoreFile != null &&
+          customStoreFile.exists() &&
+          customStorePassword.isNotEmpty() &&
+          customKeyAlias.isNotEmpty() &&
+          customKeyPassword.isNotEmpty()
+
   signingConfigs {
+    if (useCustomSigning) {
       create("custom") {
-          val keyStorePath = "${rootProject.projectDir}/signing/signing-key.jks"
-          val keyStoreFile = file(keyStorePath)
-          
-          val signing_storePassword = System.getenv("SIGNING_STORE_PASSWORD") ?: ""
-          val signing_keyPassword = System.getenv("SIGNING_KEY_PASSWORD") ?: ""
-          
-          storeFile = keyStoreFile
-          storePassword = signing_storePassword
-          keyAlias = "androidcs"
-          keyPassword = signing_keyPassword
+        storeFile = customStoreFile
+        storePassword = customStorePassword
+        keyAlias = customKeyAlias
+        keyPassword = customKeyPassword
       }
+    }
   }
 
   androidResources { generateLocaleConfig = true }
@@ -97,12 +109,12 @@ android {
 
   buildTypes {
     debug {
-      signingConfig = signingConfigs.getByName("custom")
+      signingConfig = signingConfigs.getByName(if (useCustomSigning) "custom" else "debug")
     }
 
     release {
       isShrinkResources = false
-      signingConfig = signingConfigs.getByName("custom")
+      signingConfig = signingConfigs.getByName(if (useCustomSigning) "custom" else "debug")
     }
   }
   
@@ -189,6 +201,11 @@ dependencies {
 
   // external deps here
   implementation("com.github.Dimezis:BlurView:version-3.2.0")
+
+  // Wireless ADB (pairing + connect + install) murni Kotlin/Java, tanpa binary adb
+  implementation("com.github.MuntashirAkon:libadb-android:1.0.1")
+  implementation("com.github.MuntashirAkon:sun-security-android:1.1")
+  implementation("org.conscrypt:conscrypt-android:2.5.2")
   implementation("androidx.security:security-crypto:1.1.0-alpha06")
   implementation(projects.external.acsprovider)
   implementation(projects.external.atc) 
