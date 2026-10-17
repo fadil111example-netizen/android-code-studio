@@ -28,6 +28,10 @@ import com.tom.rv2ide.actions.BaseBuildAction
 import com.tom.rv2ide.actions.getContext
 import com.tom.rv2ide.actions.markInvisible
 import com.tom.rv2ide.actions.openApplicationModuleChooser
+import com.tom.rv2ide.adbwireless.AdbInstallResult
+import com.tom.rv2ide.adbwireless.AdbRunDialogs
+import com.tom.rv2ide.adbwireless.AdbWireless
+import com.tom.rv2ide.adbwireless.InstallMethod
 import com.tom.rv2ide.app.BaseApplication
 import com.tom.rv2ide.lookup.Lookup
 import com.tom.rv2ide.managers.PreferenceManager
@@ -65,6 +69,9 @@ class QuickRunWithCancellationAction(context: Context, override val order: Int) 
 
   private val prefManager: PreferenceManager
     get() = BaseApplication.getBaseInstance().prefManager
+
+  /** Cara install yang dipilih user di dialog tombol Run. */
+  @Volatile private var installMethod: InstallMethod = InstallMethod.SYSTEM
 
   companion object {
 
@@ -121,6 +128,20 @@ class QuickRunWithCancellationAction(context: Context, override val order: Int) 
   }
 
   private fun quickRun(data: ActionData): Boolean {
+    // Tombol Run: tanyakan dulu mau dijalankan/diinstall lewat apa.
+    val chooserActivity = data.requireActivity()
+    AdbRunDialogs.showMethodChooser(chooserActivity) { method ->
+      installMethod = method
+      if (method == InstallMethod.ADB_WIRELESS && !AdbWireless.isSupported) {
+        flashError(chooserActivity.getString(R.string.adbw_unsupported))
+        return@showMethodChooser
+      }
+      startBuildAndRun(data)
+    }
+    return true
+  }
+
+  private fun startBuildAndRun(data: ActionData) {
     openApplicationModuleChooser(data) { module ->
       val activity = data.requireActivity()
 
@@ -138,7 +159,6 @@ class QuickRunWithCancellationAction(context: Context, override val order: Int) 
 
       onModuleSelected(data, module, variant, taskName)
     }
-    return true
   }
 
   private fun onModuleSelected(
@@ -253,10 +273,10 @@ class QuickRunWithCancellationAction(context: Context, override val order: Int) 
       return
     }
 
-    install(data, apkFile)
+    install(data, apkFile, variant)
   }
 
-  private fun install(data: ActionData, apk: File) {
+  private fun install(data: ActionData, apk: File, variant: BasicAndroidVariantMetadata) {
     val activity =
         data.getActivity()
             ?: run {
@@ -269,9 +289,14 @@ class QuickRunWithCancellationAction(context: Context, override val order: Int) 
       return
     }
 
-    log.debug("Installing APK: {}", apk)
+    log.debug("Installing APK: {} (method={})", apk, installMethod)
 
-    if (prefManager.getBoolean(INSTALL_VIA_SHIZUKU, false)) {
+    if (installMethod == InstallMethod.ADB_WIRELESS) {
+      installViaAdb(data, apk, variant.mainArtifact.applicationId)
+      return
+    }
+
+    if (installMethod == InstallMethod.SHIZUKU) {
       var installingDialog: InstallingDialog? = null
       activity.runOnUiThread {
         installingDialog = InstallingDialog.create(activity, "Installing…")
@@ -347,6 +372,65 @@ class QuickRunWithCancellationAction(context: Context, override val order: Int) 
           apk,
           activity.installationSessionCallback(),
       )
+    }
+  }
+
+  /**
+   * Install lewat Wireless ADB ke HP ini (tanpa binary adb): connect (port dicari otomatis lewat
+   * mDNS) -> kalau belum pairing tampilkan dialog pairing -> kirim APK -> buka aplikasinya.
+   */
+  private fun installViaAdb(data: ActionData, apk: File, applicationId: String?) {
+    AdbWireless.launch { adbInstallFlow(data, apk, applicationId) }
+  }
+
+  private suspend fun adbInstallFlow(data: ActionData, apk: File, applicationId: String?) {
+    val activity = data.requireActivity()
+
+    val dialog =
+        withContext(Dispatchers.Main) {
+          InstallingDialog.create(activity, activity.getString(R.string.adbw_connecting)).also {
+            it.show()
+          }
+        }
+
+    var connectError: String? = null
+    val connected =
+        try {
+          AdbWireless.connect(activity)
+        } catch (e: Throwable) {
+          log.warn("Unable to connect to adb", e)
+          connectError = e.message
+          false
+        }
+
+    if (!connected) {
+      withContext(Dispatchers.Main) {
+        dialog.dismiss()
+        AdbRunDialogs.showPairingDialog(
+            activity,
+            connectError,
+            onConnected = { AdbWireless.launch { adbInstallFlow(data, apk, applicationId) } },
+            onCancelled = {},
+        )
+      }
+      return
+    }
+
+    withContext(Dispatchers.Main) { dialog.setMessage(activity.getString(R.string.adbw_installing)) }
+    val result = AdbWireless.installApk(activity, apk)
+    withContext(Dispatchers.Main) {
+      dialog.dismiss()
+      when (result) {
+        is AdbInstallResult.Success -> {
+          if (applicationId != null) {
+            IntentUtils.launchApp(activity, applicationId, logError = false)
+          } else {
+            flashError("Installed, but unable to determine package name to launch.")
+          }
+        }
+        is AdbInstallResult.Failure ->
+            flashError(activity.getString(R.string.adbw_install_failed, result.message))
+      }
     }
   }
 
